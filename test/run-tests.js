@@ -487,7 +487,7 @@ async function runScenario(name, mockEnv, proxyEnv, fn) {
     const events = text.split('\n').filter((l) => l.startsWith('event: ')).map((l) => l.slice(7).trim());
     ok('断流时收到 response.failed', events.includes('response.failed'), events.join(','));
     ok('不伪装成正常 completed', !events.includes('response.completed'), events.join(','));
-    ok('failed 带错误信息与部分输出', text.includes('upstream_disconnected') && text.includes('part-A'), text.slice(-400));
+    ok('failed 带错误信息与部分输出', /upstream_(disconnected|stream_error)/.test(text) && text.includes('part-A'), text.slice(-400));
     ok('日志记录了中断', /responses 流中断|上游流错误/.test(proxy.log()));
   });
 

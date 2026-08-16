@@ -247,6 +247,7 @@ async function proxyApi(req, res, upstreamPath) {
         j.model = j.model.slice('copilot/'.length);
         body = Buffer.from(JSON.stringify(j));
       }
+      if (typeof j.model === 'string') req._ocpModel = j.model; // 规范化流立即开头的 model
     } catch { /* 非 JSON body 不改写 */ }
   }
   if (channel === 'copilot' && !config.copilotEnabled) {
@@ -577,16 +578,18 @@ function sanitizeToolsResponses(tools) {
  * Zen /responses 的 SSE 流是残缺的:只有 output_text.delta + completed(ping 在最后),
  * 缺 response.created / output_item.added / content_part.added|done / output_item.done,
  * completed 的 response 对象也只有 id/model 空壳。严格按 OpenAI 规范解析的客户端会输出异常。
- * 本生成器在透传时合成补齐标准事件序列,delta 原样转发,completed 增强为带聚合 output 的完整对象。
+ * 且模型思考期间上游完全静默,客户端(约 6s 无事件)会主动取消 —— 因此:
+ *   1. 响应头一到立即发送开头事件序列(不等第一个 delta)
+ *   2. 等待期间定期发送标准 event: ping 保活
+ *   3. delta 原样透传,completed 增强为带聚合 output 的完整对象
+ *   4. 上游中断时显式 response.failed(携带部分输出),客户端可感知重试
  */
-async function* normalizeResponsesSse(source) {
+async function* normalizeResponsesSse(source, model = '', keepaliveMs = 15000) {
   const sse = (type, obj) => `event: ${type}\ndata: ${JSON.stringify(obj)}\n\n`;
-  let id = 'resp-' + Math.random().toString(36).slice(2, 14);
-  let model = '';
+  const id = 'resp-' + Math.random().toString(36).slice(2, 14);
+  model = model || '';
   let text = '';
-  let started = false;
   let completed = false;
-  let buf = '';
 
   const startSeq = function* () {
     yield sse('response.created', { type: 'response.created', response: { id, model, status: 'in_progress' } });
@@ -618,53 +621,57 @@ async function* normalizeResponsesSse(source) {
     });
   };
 
-  try {
-    parse: for await (const chunk of source) {
-      buf += Buffer.from(chunk).toString('utf8');
-    let idx;
-    while ((idx = buf.indexOf('\n\n')) !== -1) {
-      const block = buf.slice(0, idx);
-      buf = buf.slice(idx + 2);
-      let evType = '', data = '';
-      for (const line of block.split('\n')) {
-        if (line.startsWith('event: ')) evType = line.slice(7).trim();
-        else if (line.startsWith('data: ')) data += line.slice(6);
-      }
-      if (!evType && !data) continue;
+  // 立即开始事件流,避免客户端"首事件超时"取消
+  yield* startSeq();
 
-      if (evType === 'response.output_text.delta') {
-        let d = {};
-        try { d = JSON.parse(data || '{}'); } catch {}
-        if (!started) {
-          started = true;
-          if (d.id) id = d.id;
-          if (d.response && d.response.model) model = d.response.model;
-          else if (d.model) model = d.model;
-          yield* startSeq();
+  const it = source[Symbol.asyncIterator]();
+  let buf = '';
+  let failed = false;
+  try {
+    while (true) {
+      let r;
+      const timer = keepaliveMs > 0 ? new Promise((resolve) => setTimeout(() => resolve(null), keepaliveMs).unref?.()) : null;
+      if (timer) r = await Promise.race([it.next(), timer]);
+      else r = await it.next();
+      if (r === null) {
+        if (completed) break;
+        yield 'event: ping\ndata: {"type":"ping"}\n\n'; // 思考期保活,标准事件客户端可忽略
+        continue;
+      }
+      if (r.done) break;
+      buf += Buffer.from(r.value).toString('utf8');
+      let idx;
+      while ((idx = buf.indexOf('\n\n')) !== -1) {
+        const block = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        let evType = '', data = '';
+        for (const line of block.split('\n')) {
+          if (line.startsWith('event: ')) evType = line.slice(7).trim();
+          else if (line.startsWith('data: ')) data += line.slice(6);
         }
-        if (typeof d.delta === 'string') text += d.delta;
-        yield block + '\n\n'; // 原样转发
-        continue;
+        if (!evType && !data) continue;
+
+        if (evType === 'response.output_text.delta') {
+          let d = {};
+          try { d = JSON.parse(data || '{}'); } catch {}
+          if (typeof d.delta === 'string') text += d.delta;
+          yield block + '\n\n'; // 原样转发
+          continue;
+        }
+        if (evType === 'response.completed') {
+          completed = true;
+          yield* endSeq(); // 用增强版 completed 替代上游的空壳
+          continue;
+        }
+        if (evType === 'ping') continue; // 丢弃上游 ping(我们按需自己发)
+        yield block + '\n\n';
       }
-      if (evType === 'response.completed') {
-        completed = true;
-        let d = {};
-        try { d = JSON.parse(data || '{}'); } catch {}
-        if (d.response && d.response.id) id = d.response.id;
-        if (d.response && d.response.model) model = d.response.model;
-        yield* endSeq(); // 用增强版 completed 替代上游的空壳
-        continue;
-      }
-      if (evType === 'ping') continue; // 丢弃上游 ping 心跳(completed 后的尾部 ping 会打乱标准序列;代理自有 keepalive)
-      // 其他事件原样透传
-      yield block + '\n\n';
-    }
     }
   } catch (e) {
+    failed = true;
     logger.warn('proxy', `responses 上游流错误: ${String(e && e.message || e).slice(0, 120)}`);
   }
-  if (started && !completed) {
-    // 上游流中断:显式失败而不是伪装成正常完成,客户端/网关才能感知并重试
+  if (!completed) {
     logger.warn('proxy', `responses 流中断,已发送 response.failed(已收文本 ${text.length} 字符)`);
     yield sse('response.content_part.done', {
       type: 'response.content_part.done', output_index: 0, content_index: 0,
@@ -678,7 +685,7 @@ async function* normalizeResponsesSse(source) {
       type: 'response.failed',
       response: {
         id, model, status: 'failed',
-        error: { code: 'upstream_disconnected', message: '上游流中断,输出不完整,请重试' },
+        error: { code: failed ? 'upstream_stream_error' : 'upstream_disconnected', message: '上游流中断,输出不完整,请重试' },
         output: [{ type: 'message', status: 'incomplete', role: 'assistant', content: [{ type: 'output_text', text, annotations: [] }] }],
       },
     });
@@ -735,7 +742,7 @@ async function relayResponse(id, req, res, resp, ac, onClientClose, startedAt, n
   touchIdle();
 
   try {
-    const src = (normalizeResponses && isSse) ? normalizeResponsesSse(resp.body) : resp.body;
+    const src = (normalizeResponses && isSse) ? normalizeResponsesSse(resp.body, req._ocpModel, config.keepaliveSec * 1000) : resp.body;
     for await (const chunk of src) {
       lastActivity = Date.now();
       touchIdle();
