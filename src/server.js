@@ -33,6 +33,8 @@ const stats = {
   upstream_401: 0,
   retries: 0,
   keepalives_sent: 0,
+  tools_sanitized: 0,
+  tools_dropped: 0,
 };
 
 // ---------------------------------------------------------------- 入口
@@ -198,9 +200,22 @@ async function proxyApi(req, res, upstreamPath) {
 
   // ---- 通道判定:X-Channel 头或模型名 copilot/ 前缀(转发时剥前缀) ----
   let channel = req.headers['x-channel'] === 'copilot' ? 'copilot' : 'zen';
-  if (channel === 'zen' && body.length) {
+  let sanitizeInfo = null;
+  if (body.length) {
     try {
       const j = JSON.parse(body.toString('utf8'));
+      // chat/completions 的 tools 格式修复(默认开,可 SANITIZE_TOOLS=0 关闭)
+      if (config.sanitizeTools && Array.isArray(j.tools) && /chat\/completions$/.test(upstreamPath.split('?')[0])) {
+        const s = sanitizeTools(j.tools);
+        if (s.dropped || s.converted) {
+          j.tools = s.tools;
+          sanitizeInfo = s;
+          body = Buffer.from(JSON.stringify(j));
+          stats.tools_sanitized += s.converted;
+          if (s.dropped) stats.tools_dropped += s.dropped;
+          logger.info('proxy', `tools 修复 [${id}] 转换=${s.converted} 丢弃=${s.dropped} 保留=${s.tools.length}`);
+        }
+      }
       if (typeof j.model === 'string' && j.model.startsWith('copilot/')) {
         channel = 'copilot';
         j.model = j.model.slice('copilot/'.length);
@@ -462,6 +477,40 @@ async function aggregatedModels(req, res, upstreamPath, id, startedAt) {
 
   logger.info('proxy', `<- [${id}] models 聚合 zen=${rz.status === 'fulfilled' ? rz.value.length : 'fail'} copilot=${rc.status === 'fulfilled' ? rc.value.length : 'fail'} ${Math.round((Date.now() - startedAt) / 1000)}s`);
   sendJson(res, 200, { object: 'list', data, ...(warn.length ? { _warnings: warn } : {}) });
+}
+
+/**
+ * 工具定义格式修复(chat/completions):
+ * 部分客户端(如 Codex)会把 Responses API 的扁平 function 定义
+ *   {"type":"function","name":"x","description":...,"parameters":...}
+ * 甚至缺 name 的残缺对象混进 tools 数组,上游校验 function.name 直接 400。
+ * 这里统一转为嵌套格式,无法修复的条目丢弃(响应头 x-sanitized-tools 标注)。
+ */
+function sanitizeTools(tools) {
+  if (!Array.isArray(tools)) return { tools, dropped: 0, converted: 0 };
+  const out = [];
+  let dropped = 0, converted = 0;
+  for (const t of tools) {
+    if (!t || typeof t !== 'object') { dropped++; continue; }
+    const fn = t.function;
+    if (fn && typeof fn === 'object' && fn.name) { out.push(t); continue; } // 标准嵌套
+    const name = (fn && fn.name) || t.name;
+    if (name && (t.type === 'function' || t.type === undefined || !t.type)) {
+      // 扁平格式或缺 type:重组为标准嵌套
+      out.push({
+        type: 'function',
+        function: {
+          name,
+          description: (fn && fn.description) || t.description || '',
+          parameters: (fn && fn.parameters) || t.parameters || { type: 'object', properties: {} },
+        },
+      });
+      converted++;
+      continue;
+    }
+    dropped++; // 无 name 无法修复(如空对象)
+  }
+  return { tools: out, dropped, converted };
 }
 
 /** 把上游响应(含 SSE 流)转发给客户端,空闲时插入 SSE 心跳注释防止链路被掐断 */

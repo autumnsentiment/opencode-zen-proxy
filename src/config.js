@@ -73,6 +73,10 @@ const config = {
   rateLimitGlobalRpm: num0(process.env.RATE_LIMIT_GLOBAL_RPM, 0), // 全局 RPM
   rateLimitBurst: num(process.env.RATE_LIMIT_BURST, 5), // 突发容量(桶大小)
 
+  // 工具定义格式自动修复(chat/completions):扁平/残缺的 tools 条目转标准嵌套格式,
+  // 避免 Codex 等客户端混发 Responses 扁平格式导致上游 400。0=关闭纯透传
+  sanitizeTools: bool(process.env.SANITIZE_TOOLS, true),
+
   // 持久化
   dataDir: process.env.DATA_DIR || './data',
 

@@ -383,6 +383,33 @@ async function runScenario(name, mockEnv, proxyEnv, fn) {
     ok('GET 配置可读', cfg.free_rpm === 0 && cfg.free_tpm === 0, JSON.stringify(cfg));
   });
 
+  // ---------- 场景 L:tools 格式自动修复(Codex 混发扁平/残缺格式) ----------
+  await runScenario('tools 格式自动修复', {}, {}, async (base, proxy) => {
+    const tools = [
+      { type: 'function', function: { name: 'ok_nested', description: '标准嵌套', parameters: { type: 'object', properties: {} } } }, // 0: 标准格式
+      { type: 'function', name: 'flat_tool', description: 'Responses 扁平格式', parameters: { type: 'object', properties: {} } }, // 1: 扁平
+      { description: '无 name 残缺项', parameters: { type: 'object' } }, // 2: 无法修复
+      {}, // 3: 空对象
+    ];
+    let r = await fetch(base + '/v1/chat/completions', {
+      method: 'POST', headers: { authorization: 'Bearer k1', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-5.1', messages: [], tools }),
+    });
+    const j = await r.json();
+    ok('混发格式请求不再 400', r.status === 200, `status=${r.status}`);
+    ok('扁平格式已转嵌套且带 name', JSON.stringify(j._echo.tool_names) === JSON.stringify(['ok_nested', 'flat_tool']), JSON.stringify(j._echo.tool_names));
+    const st = await (await fetch(base + '/stats', { headers: { authorization: 'Bearer k1' } })).json();
+    ok('修复/丢弃计数正确', st.tools_sanitized === 1 && st.tools_dropped === 2, JSON.stringify({ s: st.tools_sanitized, d: st.tools_dropped }));
+    ok('代理日志记录了修复', /tools 修复/.test(proxy.log()));
+
+    // responses 端点不做转换(本来就是扁平格式)
+    r = await fetch(base + '/v1/responses', {
+      method: 'POST', headers: { authorization: 'Bearer k1', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-5.1', input: 'x', tools: [{ type: 'function', name: 'flat_ok', parameters: { type: 'object' } }] }),
+    });
+    ok('responses 端点保持透传不转换', r.status === 200);
+  });
+
   console.log(`\n结果: ${passed} 通过, ${failed} 失败`);
   process.exit(failed ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });

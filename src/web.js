@@ -290,6 +290,7 @@ ${loadQrLib()}
       [s.gate ? s.gate.waiting : '-', '排队中'], [s.limiter ? s.limiter.rejected : '-', '限速拦截'],
       [s.upstream_429, '上游429'], [s.upstream_401, '上游401'],
       [s.retries, '自动重试'], [s.keepalives_sent, '心跳发送'],
+      [(s.tools_sanitized || 0) + '/' + (s.tools_dropped || 0), '工具修复/丢弃'],
       [Math.floor((Date.now()-s.started_at)/1000) + 's', '运行时长']
     ];
     $('stats').innerHTML = items.map(function(it){

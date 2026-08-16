@@ -135,7 +135,11 @@ const server = http.createServer(async (req, res) => {
           },
           finish_reason: 'tool_calls',
         }],
-        _echo: { tools: json.tools.length, tool_choice: json.tool_choice ?? null, parallel_tool_calls: json.parallel_tool_calls ?? null },
+        _echo: {
+          tools: json.tools.length,
+          tool_names: (json.tools || []).map((t) => (t.function && t.function.name) || t.name || null),
+          tool_choice: json.tool_choice ?? null, parallel_tool_calls: json.parallel_tool_calls ?? null,
+        },
       }));
     }
 
