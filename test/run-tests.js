@@ -425,7 +425,7 @@ async function runScenario(name, mockEnv, proxyEnv, fn) {
     });
     const j = await r.json();
     ok('responses 混发格式请求 200', r.status === 200, `status=${r.status}`);
-    ok('扁平化后:转换的带 name,残缺的被丢弃,内置工具保留', JSON.stringify(j._echo.tool_names) === JSON.stringify(['resp_flat', 'nested_in', 'web_search']), JSON.stringify(j._echo.tool_names));
+    ok('扁平化后:转换的带 name,残缺/非function(内置工具)全被丢弃', JSON.stringify(j._echo.tool_names) === JSON.stringify(['resp_flat', 'nested_in']), JSON.stringify(j._echo.tool_names));
     ok('丢弃计数', (await (await fetch(base + '/stats', { headers: { authorization: 'Bearer k1' } })).json()).tools_dropped >= 2);
     ok('日志记录修复', /tools 修复/.test(proxy.log()));
   });

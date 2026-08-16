@@ -520,7 +520,9 @@ function sanitizeTools(tools) {
 /**
  * Responses API 的 tools 修复:目标格式是扁平
  *   {"type":"function","name":"x","description":...,"parameters":...}
- * 嵌套 chat 格式转入的条目转扁平;缺 name 的残缺条目丢弃;内置工具类型原样保留。
+ * 嵌套 chat 格式转入的条目转扁平;缺 name 的残缺条目丢弃;
+ * 非 function 类型(web_search 等内置工具)也丢弃——Zen 的 Responses->chat
+ * 转换器不支持它们,会生成空 {} 导致上游 400。
  */
 function sanitizeToolsResponses(tools) {
   if (!Array.isArray(tools)) return { tools, dropped: 0, converted: 0 };
@@ -542,10 +544,8 @@ function sanitizeToolsResponses(tools) {
         converted++;
         continue;
       }
-      dropped++;
-      continue;
     }
-    out.push(t); // web_search / code_interpreter 等内置工具类型,原样保留
+    dropped++; // 无 name / 非 function 类型(Zen 不支持)
   }
   return { tools: out, dropped, converted };
 }
