@@ -220,6 +220,12 @@ async function proxyApi(req, res, upstreamPath) {
           logger.info('proxy', `tools 修复 [${id}] 转换=${s.converted} 丢弃=${s.dropped} 保留=${s.tools.length}`);
         }
       }
+      // Zen /responses 不认字符串 input(内部转 messages 为空报 400),自动转数组
+      if (config.sanitizeTools && /responses\/?$/.test(upstreamPath.split('?')[0]) && typeof j.input === 'string') {
+        j.input = [{ role: 'user', content: j.input }];
+        body = Buffer.from(JSON.stringify(j));
+        logger.info('proxy', `input 兼容 [${id}] 字符串 input 已转为数组`);
+      }
       if (typeof j.model === 'string' && j.model.startsWith('copilot/')) {
         channel = 'copilot';
         j.model = j.model.slice('copilot/'.length);
