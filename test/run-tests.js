@@ -410,6 +410,26 @@ async function runScenario(name, mockEnv, proxyEnv, fn) {
     ok('responses 端点保持透传不转换', r.status === 200);
   });
 
+  // ---------- 场景 M:/responses 的 tools 扁平格式修复 ----------
+  await runScenario('responses tools 扁平修复', {}, {}, async (base, proxy) => {
+    const tools = [
+      { type: 'function', name: 'resp_flat', description: '扁平(标准)', parameters: { type: 'object', properties: {} } }, // 标准,保留
+      { type: 'function', function: { name: 'nested_in', description: 'chat 嵌套混入', parameters: { type: 'object', properties: {} } } }, // 嵌套 → 转扁平
+      { description: 'broken', parameters: { type: 'object' } }, // 无 name → 丢弃
+      {}, // 空 → 丢弃
+      { type: 'web_search' }, // 内置工具 → 原样保留
+    ];
+    let r = await fetch(base + '/v1/responses', {
+      method: 'POST', headers: { authorization: 'Bearer k1', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-5.1', input: 'x', tools }),
+    });
+    const j = await r.json();
+    ok('responses 混发格式请求 200', r.status === 200, `status=${r.status}`);
+    ok('扁平化后:转换的带 name,残缺的被丢弃,内置工具保留', JSON.stringify(j._echo.tool_names) === JSON.stringify(['resp_flat', 'nested_in', 'web_search']), JSON.stringify(j._echo.tool_names));
+    ok('丢弃计数', (await (await fetch(base + '/stats', { headers: { authorization: 'Bearer k1' } })).json()).tools_dropped >= 2);
+    ok('日志记录修复', /tools 修复/.test(proxy.log()));
+  });
+
   console.log(`\n结果: ${passed} 通过, ${failed} 失败`);
   process.exit(failed ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });

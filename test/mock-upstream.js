@@ -123,7 +123,7 @@ const server = http.createServer(async (req, res) => {
     const toolName = json.tools?.[0]?.function?.name || 'get_weather';
     const toolArgs = JSON.stringify({ city: '上海', unit: 'celsius' });
 
-    if (json.tools?.length && !json.stream) {
+    if (json.tools?.length && !json.stream && path === '/chat/completions') {
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({
         id: 'mock-tool', object: 'chat.completion', model: json.model || 'mock',
@@ -163,6 +163,9 @@ const server = http.createServer(async (req, res) => {
         model: json.model || 'mock',
         choices: [{ index: 0, message: { role: 'assistant', content: `hello from mock, token=${authz.slice(0, 24)}` }, finish_reason: 'stop' }],
         output: [{ type: 'message', content: [{ type: 'output_text', text: `hello from mock, token=${authz.slice(0, 24)}` }] }],
+        _echo: path === '/responses'
+          ? { tool_names: (json.tools || []).map((t) => t.name || t.type || null) }
+          : { tools: (json.tools || []).length, tool_names: (json.tools || []).map((t) => (t.function && t.function.name) || t.name || null), tool_choice: json.tool_choice ?? null, parallel_tool_calls: json.parallel_tool_calls ?? null },
       }));
     }
 

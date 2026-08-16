@@ -204,10 +204,14 @@ async function proxyApi(req, res, upstreamPath) {
   if (body.length) {
     try {
       const j = JSON.parse(body.toString('utf8'));
-      // chat/completions 的 tools 格式修复(默认开,可 SANITIZE_TOOLS=0 关闭)
-      if (config.sanitizeTools && Array.isArray(j.tools) && /chat\/completions$/.test(upstreamPath.split('?')[0])) {
-        const s = sanitizeTools(j.tools);
-        if (s.dropped || s.converted) {
+      // tools 格式修复(默认开,可 SANITIZE_TOOLS=0 关闭):
+      //   /chat/completions -> 标准嵌套; /responses -> 标准扁平
+      if (config.sanitizeTools && Array.isArray(j.tools)) {
+        const p = upstreamPath.split('?')[0];
+        let s = null;
+        if (/chat\/completions\/?$/.test(p)) s = sanitizeTools(j.tools);
+        else if (/responses\/?$/.test(p)) s = sanitizeToolsResponses(j.tools);
+        if (s && (s.dropped || s.converted)) {
           j.tools = s.tools;
           sanitizeInfo = s;
           body = Buffer.from(JSON.stringify(j));
@@ -509,6 +513,39 @@ function sanitizeTools(tools) {
       continue;
     }
     dropped++; // 无 name 无法修复(如空对象)
+  }
+  return { tools: out, dropped, converted };
+}
+
+/**
+ * Responses API 的 tools 修复:目标格式是扁平
+ *   {"type":"function","name":"x","description":...,"parameters":...}
+ * 嵌套 chat 格式转入的条目转扁平;缺 name 的残缺条目丢弃;内置工具类型原样保留。
+ */
+function sanitizeToolsResponses(tools) {
+  if (!Array.isArray(tools)) return { tools, dropped: 0, converted: 0 };
+  const out = [];
+  let dropped = 0, converted = 0;
+  for (const t of tools) {
+    if (!t || typeof t !== 'object') { dropped++; continue; }
+    if (t.type === 'function' || t.type === undefined || !t.type) {
+      const name = t.name || (t.function && t.function.name);
+      if (name) {
+        const fn = t.function || {};
+        out.push({
+          type: 'function',
+          name,
+          description: t.description || fn.description || '',
+          parameters: t.parameters || fn.parameters || { type: 'object', properties: {} },
+          ...(t.strict !== undefined ? { strict: t.strict } : {}),
+        });
+        converted++;
+        continue;
+      }
+      dropped++;
+      continue;
+    }
+    out.push(t); // web_search / code_interpreter 等内置工具类型,原样保留
   }
   return { tools: out, dropped, converted };
 }
