@@ -476,6 +476,21 @@ async function runScenario(name, mockEnv, proxyEnv, fn) {
     ok('delta 事件原样保留', (text.match(/event: response\.output_text\.delta/g) || []).length === 2);
   });
 
+  // ---------- 场景 P:上游断流时显式 response.failed(可被客户端感知重试) ----------
+  await runScenario('断流显式失败', { MOCK_SSE_BREAK: '1' }, {}, async (base, proxy) => {
+    const r = await fetch(base + '/v1/responses', {
+      method: 'POST', headers: { authorization: 'Bearer k1', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'deepseek-v4-flash-free', input: 'x', stream: true }),
+    });
+    let text = '';
+    for await (const c of r.body) text += Buffer.from(c).toString('utf8');
+    const events = text.split('\n').filter((l) => l.startsWith('event: ')).map((l) => l.slice(7).trim());
+    ok('断流时收到 response.failed', events.includes('response.failed'), events.join(','));
+    ok('不伪装成正常 completed', !events.includes('response.completed'), events.join(','));
+    ok('failed 带错误信息与部分输出', text.includes('upstream_disconnected') && text.includes('part-A'), text.slice(-400));
+    ok('日志记录了中断', /responses 流中断|上游流错误/.test(proxy.log()));
+  });
+
   console.log(`\n结果: ${passed} 通过, ${failed} 失败`);
   process.exit(failed ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });

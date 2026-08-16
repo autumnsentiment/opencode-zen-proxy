@@ -179,6 +179,11 @@ const server = http.createServer(async (req, res) => {
       const delta = (d) => res.write(`event: response.output_text.delta\ndata: ${JSON.stringify({ type: 'response.output_text.delta', id: rid, delta: d, response: { id: rid, model: json.model || 'mock' } })}\n\n`);
       delta('part-A');
       await sleep(100);
+      if (process.env.MOCK_SSE_BREAK === '1') {
+        // 模拟上游中途断流(不发 completed 直接断开)
+        log('SSE break!');
+        return res.destroy();
+      }
       delta('part-B');
       res.write(`event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response: { id: rid, model: json.model || 'mock' } })}\n\n`);
       res.write('event: ping\ndata: {"type":"ping"}\n\n');

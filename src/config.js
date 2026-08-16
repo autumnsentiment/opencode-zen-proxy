@@ -61,7 +61,8 @@ const config = {
   // 并发与重试
   maxConcurrency: num(process.env.MAX_CONCURRENCY, 8),
   queueTimeoutMs: num(process.env.QUEUE_TIMEOUT_MS, 120000),
-  headerTimeoutMs: num(process.env.HEADER_TIMEOUT_MS, 300000), // 等上游响应头的最长时间  streamIdleTimeoutMs: num(process.env.STREAM_IDLE_TIMEOUT_MS, 600000), // 流式无数据的超时
+  headerTimeoutMs: num(process.env.HEADER_TIMEOUT_MS, 300000), // 等上游响应头的最长时间
+  streamIdleTimeoutMs: num(process.env.STREAM_IDLE_TIMEOUT_MS, 180000), // 流式连续无数据多久判定死流(毫秒)
   retry429: num(process.env.RETRY_429, 3),
   retry5xx: num(process.env.RETRY_5XX, 1),
   retryNetwork: num(process.env.RETRY_NETWORK, 2),

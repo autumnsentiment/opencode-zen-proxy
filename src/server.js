@@ -618,8 +618,9 @@ async function* normalizeResponsesSse(source) {
     });
   };
 
-  parse: for await (const chunk of source) {
-    buf += Buffer.from(chunk).toString('utf8');
+  try {
+    parse: for await (const chunk of source) {
+      buf += Buffer.from(chunk).toString('utf8');
     let idx;
     while ((idx = buf.indexOf('\n\n')) !== -1) {
       const block = buf.slice(0, idx);
@@ -658,11 +659,29 @@ async function* normalizeResponsesSse(source) {
       // 其他事件原样透传
       yield block + '\n\n';
     }
+    }
+  } catch (e) {
+    logger.warn('proxy', `responses 上游流错误: ${String(e && e.message || e).slice(0, 120)}`);
   }
   if (started && !completed) {
-    // 上游流意外截断,补齐终止事件
-    logger.warn('proxy', 'responses 流未收到 completed,已合成终止事件');
-    yield* endSeq();
+    // 上游流中断:显式失败而不是伪装成正常完成,客户端/网关才能感知并重试
+    logger.warn('proxy', `responses 流中断,已发送 response.failed(已收文本 ${text.length} 字符)`);
+    yield sse('response.content_part.done', {
+      type: 'response.content_part.done', output_index: 0, content_index: 0,
+      part: { type: 'output_text', text, annotations: [] },
+    });
+    yield sse('response.output_item.done', {
+      type: 'response.output_item.done', output_index: 0,
+      item: { type: 'message', status: 'incomplete', role: 'assistant', content: [{ type: 'output_text', text, annotations: [] }] },
+    });
+    yield sse('response.failed', {
+      type: 'response.failed',
+      response: {
+        id, model, status: 'failed',
+        error: { code: 'upstream_disconnected', message: '上游流中断,输出不完整,请重试' },
+        output: [{ type: 'message', status: 'incomplete', role: 'assistant', content: [{ type: 'output_text', text, annotations: [] }] }],
+      },
+    });
   }
 }
 
