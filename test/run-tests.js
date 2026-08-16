@@ -455,6 +455,27 @@ async function runScenario(name, mockEnv, proxyEnv, fn) {
     ok('日志记录了拉满', /max_tokens 拉满/.test(proxy.log()));
   });
 
+  // ---------- 场景 O:responses 流规范化(补齐标准事件序列) ----------
+  await runScenario('responses SSE 规范化', {}, {}, async (base) => {
+    const r = await fetch(base + '/v1/responses', {
+      method: 'POST', headers: { authorization: 'Bearer k1', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'deepseek-v4-flash-free', input: 'x', stream: true }),
+    });
+    ok('流式响应头是 SSE', (r.headers.get('content-type') || '').includes('text/event-stream'));
+    let text = '';
+    for await (const c of r.body) text += Buffer.from(c).toString('utf8');
+    const events = text.split('\n').filter((l) => l.startsWith('event: ')).map((l) => l.slice(7).trim());
+    const need = ['response.created', 'response.in_progress', 'response.output_item.added', 'response.content_part.added', 'response.output_text.delta', 'response.content_part.done', 'response.output_item.done', 'response.completed'];
+    const missing = need.filter((e) => !events.includes(e));
+    ok('标准事件序列齐全', missing.length === 0, 'missing=' + missing + ' got=' + events.join(','));
+    ok('created 在最前、completed 在最后', events[0] === 'response.created' && events[events.length - 1] === 'response.completed', events.join(','));
+    const donePart = text.split('\n').find((l) => l.startsWith('data: ') && l.includes('output_text') && l.includes('part-Apart-B'));
+    ok('content_part.done 聚合了全部 delta', !!donePart, text.slice(-500));
+    const completedLine = text.split('\n').filter((l) => l.startsWith('data: ') && l.includes('"response.completed"'))[0] || '';
+    ok('completed 带完整 output', completedLine.includes('part-Apart-B') && completedLine.includes('"status":"completed"'), completedLine.slice(0, 300));
+    ok('delta 事件原样保留', (text.match(/event: response\.output_text\.delta/g) || []).length === 2);
+  });
+
   console.log(`\n结果: ${passed} 通过, ${failed} 失败`);
   process.exit(failed ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });

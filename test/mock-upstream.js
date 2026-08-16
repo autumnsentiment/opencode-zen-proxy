@@ -172,6 +172,20 @@ const server = http.createServer(async (req, res) => {
       }));
     }
 
+    // /responses 流式:模拟 Zen 的残缺事件流(只有 delta + completed + 尾部 ping)
+    if (path === '/responses' && json.stream) {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      const rid = 'router-mock-' + Date.now();
+      const delta = (d) => res.write(`event: response.output_text.delta\ndata: ${JSON.stringify({ type: 'response.output_text.delta', id: rid, delta: d, response: { id: rid, model: json.model || 'mock' } })}\n\n`);
+      delta('part-A');
+      await sleep(100);
+      delta('part-B');
+      res.write(`event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response: { id: rid, model: json.model || 'mock' } })}\n\n`);
+      res.write('event: ping\ndata: {"type":"ping"}\n\n');
+      res.end();
+      return;
+    }
+
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
     const ev = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
     const chunk = (delta, extra) => ev(Object.assign({ id: 'mock-stream', object: 'chat.completion.chunk', model: json.model || 'mock', choices: [{ index: 0, delta }] }, extra || {}));

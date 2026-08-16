@@ -409,7 +409,8 @@ async function forwardWithRetry(id, req, res, upstreamPath, body, startedAt) {
     }
 
     res.removeListener('close', onClientClose);
-    return relayResponse(id, req, res, resp, ac, onClientClose, startedAt);
+    const normalize = /responses\/?$/.test(upstreamPath.split('?')[0]);
+    return relayResponse(id, req, res, resp, ac, onClientClose, startedAt, normalize);
   }
 }
 
@@ -572,8 +573,101 @@ function sanitizeToolsResponses(tools) {
   return { tools: out, dropped, converted };
 }
 
+/**
+ * Zen /responses 的 SSE 流是残缺的:只有 output_text.delta + completed(ping 在最后),
+ * 缺 response.created / output_item.added / content_part.added|done / output_item.done,
+ * completed 的 response 对象也只有 id/model 空壳。严格按 OpenAI 规范解析的客户端会输出异常。
+ * 本生成器在透传时合成补齐标准事件序列,delta 原样转发,completed 增强为带聚合 output 的完整对象。
+ */
+async function* normalizeResponsesSse(source) {
+  const sse = (type, obj) => `event: ${type}\ndata: ${JSON.stringify(obj)}\n\n`;
+  let id = 'resp-' + Math.random().toString(36).slice(2, 14);
+  let model = '';
+  let text = '';
+  let started = false;
+  let completed = false;
+  let buf = '';
+
+  const startSeq = function* () {
+    yield sse('response.created', { type: 'response.created', response: { id, model, status: 'in_progress' } });
+    yield sse('response.in_progress', { type: 'response.in_progress', response: { id, model, status: 'in_progress' } });
+    yield sse('response.output_item.added', {
+      type: 'response.output_item.added', output_index: 0,
+      item: { id: 'msg-' + Math.random().toString(36).slice(2, 12), type: 'message', status: 'in_progress', role: 'assistant', content: [] },
+    });
+    yield sse('response.content_part.added', {
+      type: 'response.content_part.added', output_index: 0, content_index: 0,
+      part: { type: 'output_text', text: '', annotations: [] },
+    });
+  };
+  const endSeq = function* () {
+    yield sse('response.content_part.done', {
+      type: 'response.content_part.done', output_index: 0, content_index: 0,
+      part: { type: 'output_text', text, annotations: [] },
+    });
+    yield sse('response.output_item.done', {
+      type: 'response.output_item.done', output_index: 0,
+      item: { type: 'message', status: 'completed', role: 'assistant', content: [{ type: 'output_text', text, annotations: [] }] },
+    });
+    yield sse('response.completed', {
+      type: 'response.completed',
+      response: {
+        id, model, status: 'completed',
+        output: [{ type: 'message', status: 'completed', role: 'assistant', content: [{ type: 'output_text', text, annotations: [] }] }],
+      },
+    });
+  };
+
+  parse: for await (const chunk of source) {
+    buf += Buffer.from(chunk).toString('utf8');
+    let idx;
+    while ((idx = buf.indexOf('\n\n')) !== -1) {
+      const block = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      let evType = '', data = '';
+      for (const line of block.split('\n')) {
+        if (line.startsWith('event: ')) evType = line.slice(7).trim();
+        else if (line.startsWith('data: ')) data += line.slice(6);
+      }
+      if (!evType && !data) continue;
+
+      if (evType === 'response.output_text.delta') {
+        let d = {};
+        try { d = JSON.parse(data || '{}'); } catch {}
+        if (!started) {
+          started = true;
+          if (d.id) id = d.id;
+          if (d.response && d.response.model) model = d.response.model;
+          else if (d.model) model = d.model;
+          yield* startSeq();
+        }
+        if (typeof d.delta === 'string') text += d.delta;
+        yield block + '\n\n'; // 原样转发
+        continue;
+      }
+      if (evType === 'response.completed') {
+        completed = true;
+        let d = {};
+        try { d = JSON.parse(data || '{}'); } catch {}
+        if (d.response && d.response.id) id = d.response.id;
+        if (d.response && d.response.model) model = d.response.model;
+        yield* endSeq(); // 用增强版 completed 替代上游的空壳
+        continue;
+      }
+      if (evType === 'ping') continue; // 丢弃上游 ping 心跳(completed 后的尾部 ping 会打乱标准序列;代理自有 keepalive)
+      // 其他事件原样透传
+      yield block + '\n\n';
+    }
+  }
+  if (started && !completed) {
+    // 上游流意外截断,补齐终止事件
+    logger.warn('proxy', 'responses 流未收到 completed,已合成终止事件');
+    yield* endSeq();
+  }
+}
+
 /** 把上游响应(含 SSE 流)转发给客户端,空闲时插入 SSE 心跳注释防止链路被掐断 */
-async function relayResponse(id, req, res, resp, ac, onClientClose, startedAt) {
+async function relayResponse(id, req, res, resp, ac, onClientClose, startedAt, normalizeResponses = false) {
   const isSse = (resp.headers.get('content-type') || '').includes('text/event-stream');
 
   const headers = {};
@@ -622,7 +716,8 @@ async function relayResponse(id, req, res, resp, ac, onClientClose, startedAt) {
   touchIdle();
 
   try {
-    for await (const chunk of resp.body) {
+    const src = (normalizeResponses && isSse) ? normalizeResponsesSse(resp.body) : resp.body;
+    for await (const chunk of src) {
       lastActivity = Date.now();
       touchIdle();
       if (res.destroyed || res.writableEnded) break;
