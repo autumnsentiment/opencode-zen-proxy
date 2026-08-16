@@ -430,6 +430,31 @@ async function runScenario(name, mockEnv, proxyEnv, fn) {
     ok('日志记录修复', /tools 修复/.test(proxy.log()));
   });
 
+  // ---------- 场景 N:max_tokens 兜底(推理模型思考耗光小额度导致零输出) ----------
+  await runScenario('max_tokens 兜底', {}, { MAX_TOKENS_FLOOR: '4096' }, async (base, proxy) => {
+    let r = await fetch(base + '/v1/responses', {
+      method: 'POST', headers: { authorization: 'Bearer k1', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'deepseek-v4-flash-free', input: 'hi', max_tokens: 200 }),
+    });
+    let j = await r.json();
+    ok('responses 小 max_tokens 被抬高', j._echo.max_tokens === 4096, JSON.stringify(j._echo));
+
+    r = await fetch(base + '/v1/chat/completions', {
+      method: 'POST', headers: { authorization: 'Bearer k1', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'deepseek-v4-flash-free', messages: [], max_completion_tokens: 128 }),
+    });
+    j = await r.json();
+    ok('chat 的 max_completion_tokens 同样被抬高', j._echo.max_tokens === 4096, JSON.stringify(j._echo));
+
+    r = await fetch(base + '/v1/chat/completions', {
+      method: 'POST', headers: { authorization: 'Bearer k1', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-5.1', messages: [], max_tokens: 8000 }),
+    });
+    j = await r.json();
+    ok('足够大的 max_tokens 不被改动', j._echo.max_tokens === 8000, JSON.stringify(j._echo));
+    ok('日志记录了抬高', /max_tokens 兼容/.test(proxy.log()));
+  });
+
   console.log(`\n结果: ${passed} 通过, ${failed} 失败`);
   process.exit(failed ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });

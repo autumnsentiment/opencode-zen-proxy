@@ -226,6 +226,17 @@ async function proxyApi(req, res, upstreamPath) {
         body = Buffer.from(JSON.stringify(j));
         logger.info('proxy', `input 兼容 [${id}] 字符串 input 已转为数组`);
       }
+      // 推理模型兜底:max_tokens 过小时思考耗光额度,正文零输出;抬到安全下限
+      const ep = upstreamPath.split('?')[0];
+      if (config.maxTokensFloor > 0 && (/chat\/completions\/?$/.test(ep) || /responses\/?$/.test(ep))) {
+        for (const k of ['max_tokens', 'max_completion_tokens', 'max_output_tokens']) {
+          if (typeof j[k] === 'number' && j[k] > 0 && j[k] < config.maxTokensFloor) {
+            logger.info('proxy', `max_tokens 兼容 [${id}] ${k}: ${j[k]} -> ${config.maxTokensFloor}(推理模型思考需额度)`);
+            j[k] = config.maxTokensFloor;
+            body = Buffer.from(JSON.stringify(j));
+          }
+        }
+      }
       if (typeof j.model === 'string' && j.model.startsWith('copilot/')) {
         channel = 'copilot';
         j.model = j.model.slice('copilot/'.length);

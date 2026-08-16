@@ -163,9 +163,12 @@ const server = http.createServer(async (req, res) => {
         model: json.model || 'mock',
         choices: [{ index: 0, message: { role: 'assistant', content: `hello from mock, token=${authz.slice(0, 24)}` }, finish_reason: 'stop' }],
         output: [{ type: 'message', content: [{ type: 'output_text', text: `hello from mock, token=${authz.slice(0, 24)}` }] }],
-        _echo: path === '/responses'
-          ? { tool_names: (json.tools || []).map((t) => t.name || t.type || null) }
-          : { tools: (json.tools || []).length, tool_names: (json.tools || []).map((t) => (t.function && t.function.name) || t.name || null), tool_choice: json.tool_choice ?? null, parallel_tool_calls: json.parallel_tool_calls ?? null },
+        _echo: Object.assign(
+          path === '/responses'
+            ? { tool_names: (json.tools || []).map((t) => t.name || t.type || null) }
+            : { tools: (json.tools || []).length, tool_names: (json.tools || []).map((t) => (t.function && t.function.name) || t.name || null), tool_choice: json.tool_choice ?? null, parallel_tool_calls: json.parallel_tool_calls ?? null },
+          { max_tokens: json.max_tokens ?? json.max_completion_tokens ?? json.max_output_tokens ?? null }
+        ),
       }));
     }
 

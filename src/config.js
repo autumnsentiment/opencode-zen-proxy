@@ -77,6 +77,9 @@ const config = {
   // 避免 Codex 等客户端混发 Responses 扁平格式导致上游 400。0=关闭纯透传
   sanitizeTools: bool(process.env.SANITIZE_TOOLS, true),
 
+  // 推理模型兜底:max_tokens 低于此值会被抬高到该值(思考耗光小额度会导致零文本输出)。0=不干预
+  maxTokensFloor: num0(process.env.MAX_TOKENS_FLOOR, 4096),
+
   // 持久化
   dataDir: process.env.DATA_DIR || './data',
 
