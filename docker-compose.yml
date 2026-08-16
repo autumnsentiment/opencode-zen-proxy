@@ -1,0 +1,21 @@
+services:
+  opencode-zen-proxy:
+    build: .
+    container_name: opencode-zen-proxy
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    env_file:
+      - .env
+    volumes:
+      # 持久化 OAuth 令牌,重启容器不用重新授权
+      - ./data:/app/data
+    networks:
+      - default
+      - newapi-net
+
+# 与 new-api 同网桥,容器名互访(new-api 渠道可直接填 http://opencode-zen-proxy:8787)
+networks:
+  newapi-net:
+    name: new-api_new-api-network
+    external: true

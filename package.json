@@ -1,0 +1,14 @@
+{
+  "name": "opencode-zen-proxy",
+  "version": "1.0.0",
+  "description": "OpenCode Zen transparent reverse proxy: auth + streaming forward (chat/completions & responses) + OAuth device-code auto refresh",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test:mock": "node test/run-tests.js"
+  },
+  "engines": {
+    "node": ">=18.11"
+  },
+  "license": "MIT"
+}
