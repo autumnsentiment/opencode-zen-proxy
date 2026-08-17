@@ -226,6 +226,35 @@ async function proxyApi(req, res, upstreamPath) {
         body = Buffer.from(JSON.stringify(j));
         logger.info('proxy', `input 兼容 [${id}] 字符串 input 已转为数组`);
       }
+      // 修复 function_call 的 arguments 格式:必须是合法 JSON 字符串
+      if (config.sanitizeTools && /responses\/?$/.test(upstreamPath.split('?')[0]) && Array.isArray(j.input)) {
+        let inputModified = false;
+        for (const item of j.input) {
+          if (item && item.type === 'function_call' && item.arguments !== undefined) {
+            if (typeof item.arguments === 'object') {
+              item.arguments = JSON.stringify(item.arguments);
+              inputModified = true;
+            } else if (typeof item.arguments === 'string') {
+              try { JSON.parse(item.arguments); }
+              catch {
+                // 尝试修复常见格式错误(如单引号、无引号键)
+                try {
+                  const fixed = item.arguments
+                    .replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":')
+                    .replace(/'/g, '"');
+                  const parsed = JSON.parse(fixed);
+                  item.arguments = JSON.stringify(parsed);
+                  inputModified = true;
+                  logger.info('proxy', `arguments 修复 [${id}] function_call.${item.name || item.call_id || '?'} 单引号/无引号键已修复`);
+                } catch {
+                  logger.warn('proxy', `arguments 修复失败 [${id}] function_call.${item.name || item.call_id || '?'}: ${item.arguments.slice(0, 80)}`);
+                }
+              }
+            }
+          }
+        }
+        if (inputModified) body = Buffer.from(JSON.stringify(j));
+      }
       // 推理模型兜底:max_tokens 过小时思考耗光额度,正文零输出/截断;
       // 低于下限时直接删除该字段(不传 = 上游用模型自身最大输出,真"拉满"且不会超出模型上限)
       const ep = upstreamPath.split('?')[0];
