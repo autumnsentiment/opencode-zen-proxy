@@ -256,19 +256,20 @@ async function proxyApi(req, res, upstreamPath) {
         if (inputModified) body = Buffer.from(JSON.stringify(j));
       }
       // 推理模型兜底:max_tokens 过小时思考耗光额度,正文零输出/截断;
-      // 低于下限时直接删除该字段(不传 = 上游用模型自身最大输出,真"拉满"且不会超出模型上限)
+      // 低于下限时替换为模型安全上限(避免上游默认值过大导致 400)
       const ep = upstreamPath.split('?')[0];
       if (config.maxTokensFloor > 0 && (/chat\/completions\/?$/.test(ep) || /responses\/?$/.test(ep))) {
-        let stripped = [];
+        const modelMaxTokens = getModelMaxTokens(j.model);
+        let modified = [];
         for (const k of ['max_tokens', 'max_completion_tokens', 'max_output_tokens']) {
           if (typeof j[k] === 'number' && j[k] > 0 && j[k] < config.maxTokensFloor) {
-            delete j[k];
-            stripped.push(k);
+            j[k] = modelMaxTokens;
+            modified.push(k);
             body = Buffer.from(JSON.stringify(j));
           }
         }
-        if (stripped.length) {
-          logger.info('proxy', `max_tokens 拉满 [${id}] 已移除 ${stripped.join(',')}(低于 ${config.maxTokensFloor},交由上游用模型最大输出)`);
+        if (modified.length) {
+          logger.info('proxy', `max_tokens 兜底 [${id}] ${modified.join(',')} 已设为 ${modelMaxTokens}(原值低于 ${config.maxTokensFloor})`);
         }
       }
       if (typeof j.model === 'string' && j.model.startsWith('copilot/')) {
@@ -860,6 +861,28 @@ function sendJson(res, status, obj) {
 
 function errJson(message, type) {
   return { error: { message, type } };
+}
+
+/** 根据模型名返回安全的 max_tokens 上限,避免上游默认值过大导致 400 */
+function getModelMaxTokens(model) {
+  if (!model) return 131072;
+  const m = model.toLowerCase();
+  // Claude 系列
+  if (m.includes('claude-sonnet-5') || m.includes('claude-opus-5')) return 131072;
+  if (m.includes('claude')) return 8192;
+  // GPT 系列
+  if (m.includes('gpt-5.1') || m.includes('gpt-5')) return 131072;
+  if (m.includes('gpt-4o') || m.includes('gpt-4-turbo')) return 4096;
+  if (m.includes('gpt-4')) return 8192;
+  if (m.includes('gpt-3.5')) return 4096;
+  // GLM 系列
+  if (m.includes('glm-5')) return 131072;
+  if (m.includes('glm-4')) return 8192;
+  // DeepSeek 系列
+  if (m.includes('deepseek-v4')) return 131072;
+  if (m.includes('deepseek')) return 8192;
+  // 默认兜底
+  return 131072;
 }
 
 function backoffMs(attempt) {
