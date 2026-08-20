@@ -444,6 +444,7 @@ ${loadQrLib()}
       }
       var accR = '';   // 思考过程(reasoning_content)
       var accA = '';   // 最终回答(content)
+      var text = '';   // SSE 缓冲
       var reader = r.body.getReader();
       var dec = new TextDecoder();
       while (true) {
