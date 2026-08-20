@@ -411,7 +411,7 @@ ${loadQrLib()}
   }
   function renderStream(reasoning, answer, done){
     var h = '';
-    if (reasoning) h += '<span class="muted">〔思考〕' + esc(reasoning) + '</span>' + '\n\n';
+    if (reasoning) h += '<span class="muted">〔思考〕' + esc(reasoning) + '</span><br><br>';
     h += answer
       ? '<b style="color:var(--tx)">〔回复〕</b>' + esc(answer) + (done ? '' : '')
       : (reasoning ? '<span class="muted">(思考中,等待最终回复…)</span>' : '<span class="muted">(等待模型输出…)</span>');
